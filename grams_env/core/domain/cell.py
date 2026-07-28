@@ -11,6 +11,9 @@ class CellConfig:
 
     Todos os valores seguem 3GPP TR 36.873, Table 7.2-1.
     Sem dependências de numpy, gymnasium ou qualquer framework.
+
+    A frequência portadora (carrier_freq_ghz) é validada no range
+    [0.5, 6.0] GHz, cobrindo bandas sub-1 GHz (700 MHz) e C-band (2 GHz).
     """
 
     carrier_freq_ghz: float = 2.0
@@ -41,6 +44,28 @@ class CellConfig:
 
     # Penalidade de fila na recompensa
     queue_penalty_weight: float = 1e-4
+
+    # Modo de tráfego: 'deterministic' (CBR puro) ou 'poisson' (estocástico)
+    traffic_mode: str = "poisson"
+
+    def __post_init__(self) -> None:
+        """Valida parâmetros após inicialização."""
+        if not 0.5 <= self.carrier_freq_ghz <= 6.0:
+            raise ValueError(
+                f"carrier_freq_ghz={self.carrier_freq_ghz} fora do range "
+                f"válido [0.5, 6.0] GHz do 3GPP TR 36.873 UMa. "
+                f"Use 0.7 para 700 MHz ou 2.0 para 2 GHz."
+            )
+        if self.traffic_mode not in ("deterministic", "poisson"):
+            raise ValueError(
+                f"traffic_mode='{self.traffic_mode}' inválido. "
+                f"Opções: 'deterministic' ou 'poisson'."
+            )
+
+    @property
+    def carrier_freq_mhz(self) -> float:
+        """Frequência portadora em MHz (conveniência)."""
+        return self.carrier_freq_ghz * 1000.0
 
     @property
     def gnb_tx_power_w(self) -> float:

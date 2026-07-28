@@ -138,6 +138,7 @@ pytest tests/ -v
 
 ---
 
-## ⚖️ Licença
+## 👨‍💻 Créditos
 
-Este projeto está sob a licença **MIT**.
+**Alex Vidigal Bastos**  
+Universidade Federal de São João del-Rei (UFSJ)

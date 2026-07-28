@@ -123,3 +123,78 @@ class TestPathLossInterUE:
         ])
         pl = model.path_loss_inter_ue_db(dist_matrix)
         np.testing.assert_allclose(pl[0, 1], pl[1, 0], rtol=1e-10)
+
+
+class TestMultiFrequency:
+    """Testa o suporte a múltiplas frequências (700 MHz vs 2 GHz)."""
+
+    def test_700mhz_lower_path_loss_than_2ghz(self):
+        """700 MHz deve ter path loss MENOR que 2 GHz na mesma distância.
+
+        Frequências mais baixas sofrem menos atenuação de propagação.
+        """
+        config_700 = CellConfig(carrier_freq_ghz=0.7)
+        config_2g = CellConfig(carrier_freq_ghz=2.0)
+        model_700 = TR36873_UMa(config_700)
+        model_2g = TR36873_UMa(config_2g)
+
+        d = np.array([100.0, 200.0, 400.0])
+        is_los = np.array([True, True, True])
+
+        pl_700 = model_700.path_loss_direct_db(d, is_los)
+        pl_2g = model_2g.path_loss_direct_db(d, is_los)
+
+        assert np.all(pl_700 < pl_2g), (
+            f"Path loss a 700 MHz ({pl_700}) deveria ser < 2 GHz ({pl_2g})"
+        )
+
+    def test_700mhz_nlos_valid_range(self):
+        """Path loss NLOS a 700 MHz deve estar em faixa razoável."""
+        config = CellConfig(carrier_freq_ghz=0.7)
+        model = TR36873_UMa(config)
+        d = np.array([200.0])
+        is_los = np.array([False])
+        pl = model.path_loss_direct_db(d, is_los)
+        assert 50.0 < pl[0] < 200.0, (
+            f"Path loss NLOS a 200m/700MHz: {pl[0]:.1f} dB, esperado [50, 200]"
+        )
+
+    def test_700mhz_inter_ue_path_loss(self):
+        """Path loss inter-UE a 700 MHz deve ser menor que a 2 GHz."""
+        config_700 = CellConfig(carrier_freq_ghz=0.7)
+        config_2g = CellConfig(carrier_freq_ghz=2.0)
+        model_700 = TR36873_UMa(config_700)
+        model_2g = TR36873_UMa(config_2g)
+
+        dist = np.array([[0.0, 150.0], [150.0, 0.0]])
+        pl_700 = model_700.path_loss_inter_ue_db(dist)
+        pl_2g = model_2g.path_loss_inter_ue_db(dist)
+
+        assert np.all(pl_700 <= pl_2g), (
+            f"Inter-UE PL a 700 MHz deveria ser <= 2 GHz"
+        )
+
+    def test_carrier_freq_mhz_property(self):
+        """Propriedade carrier_freq_mhz deve converter corretamente."""
+        config_700 = CellConfig(carrier_freq_ghz=0.7)
+        config_2g = CellConfig(carrier_freq_ghz=2.0)
+        assert config_700.carrier_freq_mhz == 700.0
+        assert config_2g.carrier_freq_mhz == 2000.0
+
+    def test_invalid_frequency_raises(self):
+        """Frequência fora do range 3GPP deve levantar ValueError."""
+        import pytest
+        with pytest.raises(ValueError, match="fora do range"):
+            CellConfig(carrier_freq_ghz=0.1)
+        with pytest.raises(ValueError, match="fora do range"):
+            CellConfig(carrier_freq_ghz=10.0)
+
+    def test_los_probability_same_across_frequencies(self):
+        """P_LOS depende apenas da distância, não da frequência."""
+        model_700 = TR36873_UMa(CellConfig(carrier_freq_ghz=0.7))
+        model_2g = TR36873_UMa(CellConfig(carrier_freq_ghz=2.0))
+        d = np.array([50.0, 200.0, 400.0])
+        np.testing.assert_array_equal(
+            model_700.los_probability(d),
+            model_2g.los_probability(d),
+        )

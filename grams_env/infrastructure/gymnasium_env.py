@@ -233,9 +233,9 @@ class OpenRAN_RBA_Env(gym.Env):
             )
         )
 
-        # ---- 3. Chegada de tráfego CBR ----
-        self._queues = CBRTrafficGenerator.generate(
-            self._queues, self._cbr_bytes
+        # ---- 3. Chegada de tráfego (CBR determinístico ou Poisson) ----
+        self._queues = self._traffic.generate(
+            self._queues, self._cbr_bytes, rng
         )
 
         # ---- 4. Cálculo de SINR com interferência co-canal ----

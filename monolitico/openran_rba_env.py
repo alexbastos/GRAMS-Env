@@ -7,10 +7,6 @@ segue o 3GPP TR 36.873 (Path Loss UMa + Log-normal Shadowing + Rayleigh
 Fading). As observações são estruturadas como grafos (node_features +
 adjacency_matrix) para consumo direto por Graph Neural Networks.
 
-Autor  : GRAMS Lab
-Licença: MIT
-"""
-
 from __future__ import annotations
 
 from typing import Any
