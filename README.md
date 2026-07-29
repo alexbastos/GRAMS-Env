@@ -34,17 +34,34 @@ GRAMS-Env/
 │   │   ├── graph_builder.py           # Converte NetworkState → Grafo GNN
 │   │   └── reward.py                  # ThroughputQueueReward (Função de Recompensa)
 │   │
-│   └── infrastructure/                # 🔴 CAMADA DE INFRAESTRUTURA
-│       ├── gymnasium_env.py           # OpenRAN_RBA_Env (Wrapper Gymnasium fino)
-│       └── numpy_rng.py              # NumpyRNG (Adapter de Random Generator)
+│   ├── infrastructure/                # 🔴 CAMADA DE INFRAESTRUTURA
+│   │   ├── gymnasium_env.py           # OpenRAN_RBA_Env (Wrapper Gymnasium fino)
+│   │   └── numpy_rng.py              # NumpyRNG (Adapter de Random Generator)
+│   │
+│   └── agents/                        # 🟣 CAMADA DE AGENTES (branch: agent_GRAMS)
+│       ├── common/                    # Código compartilhado GNN ↔ MLP
+│       │   ├── utils.py               # obs→tensor, adj→edge_index, set_seed
+│       │   ├── rollout_buffer.py      # Buffer de trajetórias com GAE-λ
+│       │   └── ppo_trainer.py         # Loop PPO genérico (ActorCritic agnóstico)
+│       ├── gnn/                       # Agente GNN+PPO (artigo principal)
+│       │   ├── graph_encoder.py       # GATConv L=2, 4-heads, residual + LayerNorm
+│       │   ├── gnn_actor_critic.py    # Actor-Critic invariante ao número de UEs
+│       │   └── train_gnn.py           # Script de treinamento (CLI)
+│       └── mlp/                       # Agente MLP+PPO (baseline de comparação)
+│           ├── mlp_actor_critic.py    # Flatten fixo em V (sem generalização)
+│           └── train_mlp.py           # Script de treinamento (CLI)
 │
-├── tests/                             # 🧪 SUÍTE DE TESTES (Unitários e Integração)
-│   ├── test_propagation.py            # Testes de propagação 3GPP (sem Gymnasium)
-│   ├── test_link_budget.py            # Testes de SINR e Shannon (sem Gymnasium)
+├── tests/                             # 🧪 SUÍTE DE TESTES (87 testes)
+│   ├── test_propagation.py            # Testes de propagação 3GPP
+│   ├── test_link_budget.py            # Testes de SINR e Shannon
 │   ├── test_graph_builder.py          # Testes do construtor de grafos
-│   └── test_gymnasium_env.py          # Testes de integração do ambiente Gymnasium
+│   ├── test_gymnasium_env.py          # Testes de integração do ambiente
+│   └── test_agents/                   # Testes dos modelos de IA
+│       ├── test_graph_encoder.py      # Shapes, invariância, gradientes
+│       ├── test_actor_critic.py       # GNN vs MLP (zero-shot proof)
+│       ├── test_rollout_buffer.py     # GAE, mini-batches
+│       └── test_ppo_smoke.py          # Smoke test end-to-end
 │
-├── openran_rba_env.py                 # [Legacy] Arquivo monólito original
 ├── pyproject.toml
 └── README.md
 ```
@@ -77,29 +94,54 @@ Abaixo estão os pontos de aderência entre a modelagem e a pesquisa teórica:
 
 ---
 
-## 🚀 Instalação e Uso Rápido
+## 🚀 Instalação
 
-### Requisitos
-- Python 3.10+
-- `gymnasium`
-- `numpy`
-- `pytest` (para testes)
+### 1. Criar ambiente conda (Python 3.12)
 
-### Exemplo de Uso (Random Agent)
+> **Por quê Python 3.12?** O PyTorch e o PyTorch Geometric ainda não têm wheels oficiais para Python 3.13+.
+
+```bash
+conda create -n grams python=3.12 -y
+conda activate grams
+```
+
+### 2. Instalar PyTorch (CPU)
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+### 3. Instalar dependências do projeto
+
+```bash
+pip install torch_geometric gymnasium "numpy<2" pytest
+```
+
+> **Nota:** `numpy<2` é necessário para compatibilidade com o PyTorch 2.2.x.
+
+### 4. Verificar instalação
+
+```bash
+python -c "import torch, torch_geometric, gymnasium; print('OK')"
+```
+
+---
+
+## 📖 Uso Rápido — Random Agent
 
 ```python
 import numpy as np
 from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
 
-# Inicializa o ambiente com 10 UEs
-env = OpenRAN_RBA_Env(num_ues=10)
+# Inicializa o ambiente com 10 UEs e máximo de 3600 TTIs por episódio
+env = OpenRAN_RBA_Env(num_ues=10, max_steps=3600)
 obs, info = env.reset(seed=42)
 
 print("Estrutura das observações (Grafo):")
 print("  Node Features    :", obs["node_features"].shape)      # (10, 3) -> [CQI, Queue_bits, CBR_bytes]
 print("  Adjacency Matrix :", obs["adjacency_matrix"].shape)   # (10, 10) -> Interferência Inter-UE
 
-# Executa 1 TTI (1 ms)
+# Executa 1 TTI (1 ms) com ação aleatória
 action = env.action_space.sample()  # Aloca K=50 RBs entre os 10 UEs
 obs, reward, terminated, truncated, info = env.step(action)
 
@@ -126,15 +168,154 @@ print(f"Recompensa       : {reward:.2f}")
 
 ---
 
-## 🧪 Executando os Testes
+## 🤖 Agentes de Aprendizado por Reforço (branch `agent_GRAMS`)
 
-A suíte de testes abrange testes unitários isolados da física/telecom (sem dependências do Gymnasium) e testes de integração end-to-end.
+O pacote `grams_env/agents/` contém a implementação completa de dois agentes PPO para alocação de RBs, além do treinador genérico.
 
-Para rodar todos os 38 testes:
+### Arquitetura dos Modelos
+
+#### 1. Extrator de Características GNN — `GraphEncoder`
+
+Rede neural em grafos baseada em **GATConv** (Graph Attention Network) que transforma as observações estruturadas do simulador em *embeddings* por nó:
+
+```
+Input (V, 3) → Linear(3→64) → [GATConv(64, heads=4) + ELU + LayerNorm + Residual] × 2 → H^(L) (V, 64)
+```
+
+- **L = 2** camadas de convolução em grafos.
+- **4 attention heads** com média (não concatenação), mantendo output em `hidden_dim=64`.
+- **Residual connections** em cada camada para estabilidade do treinamento.
+- **Edge attributes**: o ganho de interferência da `adjacency_matrix` é passado como peso de atenção (`edge_dim=1`), permitindo que a GNN priorize vizinhos com maior interferência co-canal.
+- **Invariante ao número de nós**: o *message passing* processa cada nó independentemente do tamanho do grafo, permitindo **generalização zero-shot** — treinar com V=20 UEs e inferir com V=50, 100, 200.
+
+#### 2. Agente GNN+PPO — `GNNActorCritic` *(artigo principal)*
+
+```
+Actor:  H^(L) (V, 64) → Linear(64→32) → ReLU → Linear(32→1) → logits (V,) → Categorical → K amostras
+Critic: H^(L) (V, 64) → MeanPool → (64,) → Linear(64→32) → ReLU → Linear(32→1) → V(s)
+```
+
+- O **Actor** produz uma distribuição `Categorical` sobre os V UEs via logits por nó, depois amostra K=50 vezes para alocar cada RB.
+- O **Critic** usa *global mean pooling* dos embeddings para estimar o valor do estado.
+- Por ser baseado em GNN, o modelo **funciona com qualquer V** em tempo de inferência.
+
+#### 3. Baseline MLP+PPO — `MLPActorCritic` *(comparação)*
+
+```
+Input: flatten(node_features) + upper_triangle(adjacency_matrix) → vetor fixo de dim = V×3 + V×(V-1)/2
+Actor:  flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→K×V) → Categorical por RB
+Critic: flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→1)
+```
+
+- O input é um vetor **de tamanho fixo**, determinado por V no momento da criação do modelo.
+- **Não pode inferir com V diferente do treinamento** — isso prova a limitação da abordagem MLP frente à GNN no artigo.
+
+#### 4. Treinador PPO Genérico — `PPOTrainer`
+
+Implementação própria do **Proximal Policy Optimization** (Schulman et al. 2017), compatível com qualquer backbone que implemente `act()` e `evaluate()`:
+
+| Hiperparâmetro | Default | Descrição |
+|---|---|---|
+| `lr` | `3e-4` | Learning rate (Adam) |
+| `gamma` | `0.99` | Fator de desconto |
+| `gae_lambda` | `0.95` | Parâmetro λ do GAE |
+| `clip_eps` | `0.2` | Epsilon do clipping PPO |
+| `epochs` | `10` | Épocas de atualização por rollout |
+| `batch_size` | `64` | Tamanho do mini-batch |
+| `rollout_steps` | `2048` | Steps coletados por iteração |
+| `ent_coef` | `0.01` | Coeficiente do bônus de entropia |
+| `vf_coef` | `0.5` | Coeficiente da loss de valor |
+| `max_grad_norm` | `0.5` | Clipping de gradiente |
+
+Fórmula da loss total:
+```
+L = L_clip(π) + vf_coef × L_value − ent_coef × H(π)
+```
+
+---
+
+### Como Treinar
+
+#### Agente GNN+PPO (cenário de treino esparso: V=20 UEs)
 
 ```bash
-pytest tests/ -v
+# Treinamento padrão — 500 iterações com seed 42
+conda run -n grams python -m grams_env.agents.gnn.train_gnn \
+    --num_ues 20 \
+    --iterations 500 \
+    --rollout_steps 2048 \
+    --seed 42 \
+    --device cpu \
+    --save_dir runs/gnn_ppo
 ```
+
+O treinamento salva:
+- `runs/gnn_ppo/checkpoint_<iter>.pt` — checkpoints a cada 50 iterações.
+- `runs/gnn_ppo/checkpoint_final.pt` — modelo ao final.
+- `runs/gnn_ppo/model_gnn_frozen.pt` — pesos congelados para avaliação zero-shot.
+- `runs/gnn_ppo/training_log.csv` — curva de aprendizado (reward, losses, entropy).
+
+#### Baseline MLP+PPO (comparação)
+
+```bash
+conda run -n grams python -m grams_env.agents.mlp.train_mlp \
+    --num_ues 20 \
+    --iterations 500 \
+    --seed 42 \
+    --save_dir runs/mlp_ppo
+```
+
+#### Avaliação Zero-Shot (GNN com V diferente do treino)
+
+```python
+import torch
+from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
+from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
+
+# Carrega modelo treinado com V=20
+policy = GNNActorCritic(in_features=3, hidden_dim=64, num_layers=2,
+                         num_heads=4, num_rbs=50)
+policy.load_state_dict(torch.load("runs/gnn_ppo/model_gnn_frozen.pt"))
+policy.eval()
+
+# Infere com V=100 (zero-shot — sem re-treinamento)
+env = OpenRAN_RBA_Env(num_ues=100)
+obs, _ = env.reset(seed=0)
+
+with torch.no_grad():
+    action, log_prob, value = policy.act(obs)  # ✅ funciona com V=100
+
+obs, reward, _, _, info = env.step(action)
+print(f"Zero-shot reward: {reward:.2f}")
+print(f"Throughput      : {info['total_throughput_bits']:.0f} bits")
+```
+
+> **Por que o MLP falha no zero-shot?** O `MLPActorCritic` achata todas as features em um vetor de dimensão fixa `V×3 + V×(V-1)/2`. Com V=100, o vetor tem dimensão diferente do input esperado pelo modelo treinado com V=20 — resultando em `RuntimeError`. A GNN não tem essa limitação.
+
+---
+
+## 🧪 Executando os Testes
+
+A suíte de testes abrange testes unitários da física/telecom (sem dependências de Gymnasium) e testes de integração end-to-end, incluindo os modelos de IA.
+
+Para rodar todos os **87 testes**:
+
+```bash
+conda run -n grams python -m pytest tests/ -v
+```
+
+| Suite | Testes | Cobertura |
+|---|---|---|
+| `test_propagation.py` | 11 | Path Loss LOS/NLOS, P_LOS |
+| `test_link_budget.py` | 7 | SINR, Shannon Capacity |
+| `test_graph_builder.py` | 5 | Construção do grafo |
+| `test_gymnasium_env.py` | 11 | Ambiente Gymnasium completo |
+| `test_traffic.py` | 11 | Tráfego CBR e Poisson |
+| `test_agents/test_graph_encoder.py` | 8 | GATConv shapes V=5..100, zero-shot |
+| `test_agents/test_actor_critic.py` | 11 | GNN/MLP act/evaluate + zero-shot proof |
+| `test_agents/test_rollout_buffer.py` | 9 | GAE, mini-batches, precondições |
+| `test_agents/test_ppo_smoke.py` | 2 | Treinamento PPO end-to-end |
+| **Total** | **87** | ✅ **0 failed** |
 
 ---
 

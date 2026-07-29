@@ -59,6 +59,7 @@ class OpenRAN_RBA_Env(gym.Env):
         self,
         num_ues: int = 10,
         config: CellConfig | None = None,
+        max_steps: int = 3600,
     ) -> None:
         """Inicializa o ambiente OpenRAN_RBA_Env.
 
@@ -68,11 +69,14 @@ class OpenRAN_RBA_Env(gym.Env):
             Número de User Equipments (V).
         config : CellConfig | None
             Configuração da célula. Se None, usa os defaults 3GPP.
+        max_steps : int
+            Número máximo de TTIs por episódio (truncation).
         """
         super().__init__()
 
         self.num_ues = num_ues
         self.config = config or CellConfig()
+        self.max_steps = max_steps
 
         # Injeção de dependência dos serviços de domínio
         propagation = TR36873_UMa(self.config)
@@ -279,7 +283,8 @@ class OpenRAN_RBA_Env(gym.Env):
             "num_failed_sinr": num_failed,
             "step": self._step_count,
         }
-        return observation, reward, False, False, info
+        truncated = self._step_count >= self.max_steps
+        return observation, reward, False, truncated, info
 
     # ================================================================== #
     #  MÉTODOS INTERNOS                                                    #
