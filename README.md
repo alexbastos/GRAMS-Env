@@ -434,18 +434,33 @@ conda run -n grams python -m grams_env.agents.mlp.train_mlp \
 
 #### Avaliação Zero-Shot (GNN com V diferente do treino)
 
+**O que é Zero-Shot?**
+No contexto deste projeto, Zero-Shot significa treinar o agente em um cenário pequeno (ex: 20 UEs) e testá-lo diretamente em um cenário muito maior (ex: 100 UEs) sem qualquer re-treinamento. Como a GNN aprende as *regras de relacionamento* entre os nós (message passing) em vez de decorar um vetor fixo, ela consegue generalizar para novos tamanhos de grafo imediatamente.
+
+> **Por que o MLP falha no zero-shot?** O `MLPActorCritic` achata todas as features em um vetor de dimensão fixa `V×3 + V×(V-1)/2`. Se tentarmos passar 100 UEs para um MLP treinado com 20, haverá um erro de dimensão (`RuntimeError`). A GNN não tem essa limitação.
+
+Para executar um teste rápido de Zero-Shot na sua máquina (certifique-se de que o modelo foi treinado antes executando o script `run_training.sh`):
+
+```bash
+conda activate grams
+python test_zeroshot.py
+```
+
+O script carregará os pesos congelados (`runs/gnn_ppo/model_gnn_frozen.pt`), criará um ambiente complexo com 100 usuários, e fará a alocação instantaneamente.
+
+Se desejar fazer isso manualmente no seu próprio código:
+
 ```python
 import torch
 from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
 from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
 
-# Carrega modelo treinado com V=20
-policy = GNNActorCritic(in_features=3, hidden_dim=64, num_layers=2,
-                         num_heads=4, num_rbs=50)
+# 1. Carrega modelo treinado com V=20
+policy = GNNActorCritic(in_features=3, hidden_dim=64, num_layers=2, num_heads=4, num_rbs=50)
 policy.load_state_dict(torch.load("runs/gnn_ppo/model_gnn_frozen.pt"))
 policy.eval()
 
-# Infere com V=100 (zero-shot — sem re-treinamento)
+# 2. Infere com V=100 (zero-shot — sem re-treinamento)
 env = OpenRAN_RBA_Env(num_ues=100)
 obs, _ = env.reset(seed=0)
 
@@ -456,8 +471,6 @@ obs, reward, _, _, info = env.step(action)
 print(f"Zero-shot reward: {reward:.2f}")
 print(f"Throughput      : {info['total_throughput_bits']:.0f} bits")
 ```
-
-> **Por que o MLP falha no zero-shot?** O `MLPActorCritic` achata todas as features em um vetor de dimensão fixa `V×3 + V×(V-1)/2`. Com V=100, o vetor tem dimensão diferente do input esperado pelo modelo treinado com V=20 — resultando em `RuntimeError`. A GNN não tem essa limitação.
 
 
 
