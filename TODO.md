@@ -93,6 +93,3 @@ $$\text{UEs } (1, 10, 50, 100, 150, 200) \times \text{Velocidades } (0, 3, 20) \
 2. Calcular a média e o intervalo de confiança de 95%.
 3. Gerar as figuras no formato `.pdf` para o LaTeX (ex: *Throughput vs UE Density* e *95th Percentile Delay vs Mobility*).
 
----
-
-Para darmos sequência às implementações pendentes, por onde você gostaria de começar: **criar o script com as baselines clássicas (PF / RR) para testar a sanidade do simulador** ou **escrever a classe PyTorch da GNN + PPO**?
