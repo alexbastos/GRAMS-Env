@@ -1,3 +1,0 @@
-agent,num_ues,carrier_freq_ghz,bandwidth_mhz,cbr_profile,speed_profile,seed,num_steps,spectral_efficiency_bps_hz,queue_delay_p95_ms,ric_latency_mean_ms,total_reward,mean_throughput_bits,mean_queue_bits
-RoundRobin,10,2.0,10.0,"(1000, 4000)","(0.0, 3.0, 20.0)",42,500,10.467889,243.1216,0.008853,51444580.85,104678.89,17897288.24
-ProportionalFair,10,2.0,10.0,"(1000, 4000)","(0.0, 3.0, 20.0)",42,500,6.873034,409.0164,0.160063,33021595.13,68730.34,26871472.77
