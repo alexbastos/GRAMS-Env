@@ -389,7 +389,21 @@ L = L_clip(π) + vf_coef × L_value − ent_coef × H(π)
 
 ### Como Treinar
 
-#### Agente GNN+PPO (cenário de treino esparso: V=20 UEs)
+#### 1. Execução Automatizada (Recomendado)
+
+Você pode treinar ambos os modelos (GNN e MLP) em sequência rodando o script automatizado na raiz do projeto. Garanta que o ambiente conda está ativado:
+
+```bash
+conda activate grams
+./run_training.sh
+```
+Os checkpoints finais e logs de treinamento serão salvos na pasta `runs/gnn_ppo` e `runs/mlp_ppo`.
+
+---
+
+#### 2. Execução Manual
+
+**Agente GNN+PPO (cenário de treino esparso: V=20 UEs)**
 
 ```bash
 # Treinamento padrão — 500 iterações com seed 42
