@@ -47,7 +47,7 @@ from grams_env.metrics.runner import EpisodeRunner
 # ============================================================
 # Configuração da Matriz Fatorial (conforme artigo)
 # ============================================================
-UES_LIST = [1, 10, 50, 100, 150, 200]
+UES_LIST = [1, 10, 20, 50, 100, 150, 200]
 SPEEDS_LIST = [(0.0,), (3.0,), (20.0,)]
 CBR_LIST = [(1000,), (4000,)]
 FREQ_LIST = [0.7, 2.0]
