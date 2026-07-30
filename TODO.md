@@ -28,13 +28,13 @@ Classes Python puras que herdam da mesma interface do agente e implementam:
 
 #### 4. Pipeline de Experimentos e Métricas - branch **pipeline_metrics**
 
-* **Exportador de Telemetria/Resultados:** Módulo para calcular e salvar em arquivos CSV/HDF5 as 3 métricas do artigo:
+* [x] **Exportador de Telemetria/Resultados:** Módulo para calcular e salvar em arquivos CSV/HDF5 as 3 métricas do artigo:
 1. Eficiência Espectral do Sistema ($\text{bps/Hz}$).
 2. Atraso de Fila no Percentil 95 ($\text{ms}$).
 3. Latência de Inferência do RIC ($\text{ms}$).
 
 
-* **Gerenciador de Sementes (10 Seeds / Intervalo de Confiança 95%):** Script que executa automaticamente cada uma das 72 configurações com 10 sementes aleatórias distintas para garantir validade estatística.
+* [x] **Gerenciador de Sementes (10 Seeds / Intervalo de Confiança 95%):** Script que executa automaticamente cada uma das 72 configurações com 10 sementes aleatórias distintas para garantir validade estatística.
 
 ---
 
