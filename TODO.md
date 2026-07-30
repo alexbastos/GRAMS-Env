@@ -49,12 +49,12 @@ Para sair do estado atual e chegar aos gráficos finais do artigo, dividimos o t
 
 #### Fase 1: Sanity Check e Agoritmos Clássicos (1-2 dias)
 
-1. **Teste de Sanidade com Agente Aleatório:**
+1. [x] **Teste de Sanidade com Agente Aleatório:**
 * Rodar um script simples com `env.action_space.sample()` por $3600\text{ s}$ de simulação.
 * Validar se não ocorrem exceções, se as filas não estouram em $V=1$ e se os valores de SINR estão dentro da faixa esperada.
 
 
-2. **Implementar Baselines PF e RR:**
+2. [x] **Implementar Baselines PF e RR:**
 * Escrever os algoritmos *Proportional Fair* e *Round Robin* interagindo diretamente com o ambiente `gymnasium`.
 * Coletar o *baseline* de desempenho tradicional.
 
