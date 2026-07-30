@@ -157,146 +157,6 @@ print(f"Recompensa       : {reward:.2f}")
 
 ---
 
-## ⚙️ Especificações Técnicas do Modelo 3GPP TR 36.873 (UMa)
-
-| Parâmetro | Valor Padrão | Descrição |
-|---|---|---|
-| **Frequência Portadora** | 2.0 GHz | Frequência de operação |
-| **Largura de Banda** | 10.0 MHz | Total do sistema |
-| **Resource Blocks (K)** | 50 RBs | 180 kHz por RB |
-| **TTI (Time Transmission Interval)** | 1 ms | Duração de cada passo (`step`) |
-| **Potência gNodeB** | 46 dBm | Potência de transmissão do gNB |
-| **Raio da Célula** | 500 m | Célula Urban Macro (UMa) |
-| **Limiar de SINR** | 14.8 dB | Mínimo necessário para decodificação |
-| **Modelos de Mobilidade** | 0, 3, 20 km/h | Perfis atribuídos por UE |
-| **Perfis de Tráfego CBR** | 1000, 4000 B/TTI | Carga constante por UE |
-
----
-
-## 🤖 Agentes de Aprendizado por Reforço (branch `agent_GRAMS`)
-
-O pacote `grams_env/agents/` contém a implementação completa de dois agentes PPO para alocação de RBs, além do treinador genérico.
-
-### Arquitetura dos Modelos
-
-#### 1. Extrator de Características GNN — `GraphEncoder`
-
-Rede neural em grafos baseada em **GATConv** (Graph Attention Network) que transforma as observações estruturadas do simulador em *embeddings* por nó:
-
-```
-Input (V, 3) → Linear(3→64) → [GATConv(64, heads=4) + ELU + LayerNorm + Residual] × 2 → H^(L) (V, 64)
-```
-
-- **L = 2** camadas de convolução em grafos.
-- **4 attention heads** com média (não concatenação), mantendo output em `hidden_dim=64`.
-- **Residual connections** em cada camada para estabilidade do treinamento.
-- **Edge attributes**: o ganho de interferência da `adjacency_matrix` é passado como peso de atenção (`edge_dim=1`), permitindo que a GNN priorize vizinhos com maior interferência co-canal.
-- **Invariante ao número de nós**: o *message passing* processa cada nó independentemente do tamanho do grafo, permitindo **generalização zero-shot** — treinar com V=20 UEs e inferir com V=50, 100, 200.
-
-#### 2. Agente GNN+PPO — `GNNActorCritic` *(artigo principal)*
-
-```
-Actor:  H^(L) (V, 64) → Linear(64→32) → ReLU → Linear(32→1) → logits (V,) → Categorical → K amostras
-Critic: H^(L) (V, 64) → MeanPool → (64,) → Linear(64→32) → ReLU → Linear(32→1) → V(s)
-```
-
-- O **Actor** produz uma distribuição `Categorical` sobre os V UEs via logits por nó, depois amostra K=50 vezes para alocar cada RB.
-- O **Critic** usa *global mean pooling* dos embeddings para estimar o valor do estado.
-- Por ser baseado em GNN, o modelo **funciona com qualquer V** em tempo de inferência.
-
-#### 3. Baseline MLP+PPO — `MLPActorCritic` *(comparação)*
-
-```
-Input: flatten(node_features) + upper_triangle(adjacency_matrix) → vetor fixo de dim = V×3 + V×(V-1)/2
-Actor:  flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→K×V) → Categorical por RB
-Critic: flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→1)
-```
-
-- O input é um vetor **de tamanho fixo**, determinado por V no momento da criação do modelo.
-- **Não pode inferir com V diferente do treinamento** — isso prova a limitação da abordagem MLP frente à GNN no artigo.
-
-#### 4. Treinador PPO Genérico — `PPOTrainer`
-
-Implementação própria do **Proximal Policy Optimization** (Schulman et al. 2017), compatível com qualquer backbone que implemente `act()` e `evaluate()`:
-
-| Hiperparâmetro | Default | Descrição |
-|---|---|---|
-| `lr` | `3e-4` | Learning rate (Adam) |
-| `gamma` | `0.99` | Fator de desconto |
-| `gae_lambda` | `0.95` | Parâmetro λ do GAE |
-| `clip_eps` | `0.2` | Epsilon do clipping PPO |
-| `epochs` | `10` | Épocas de atualização por rollout |
-| `batch_size` | `64` | Tamanho do mini-batch |
-| `rollout_steps` | `2048` | Steps coletados por iteração |
-| `ent_coef` | `0.01` | Coeficiente do bônus de entropia |
-| `vf_coef` | `0.5` | Coeficiente da loss de valor |
-| `max_grad_norm` | `0.5` | Clipping de gradiente |
-
-Fórmula da loss total:
-```
-L = L_clip(π) + vf_coef × L_value − ent_coef × H(π)
-```
-
----
-
-### Como Treinar
-
-#### Agente GNN+PPO (cenário de treino esparso: V=20 UEs)
-
-```bash
-# Treinamento padrão — 500 iterações com seed 42
-conda run -n grams python -m grams_env.agents.gnn.train_gnn \
-    --num_ues 20 \
-    --iterations 500 \
-    --rollout_steps 2048 \
-    --seed 42 \
-    --device cpu \
-    --save_dir runs/gnn_ppo
-```
-
-O treinamento salva:
-- `runs/gnn_ppo/checkpoint_<iter>.pt` — checkpoints a cada 50 iterações.
-- `runs/gnn_ppo/checkpoint_final.pt` — modelo ao final.
-- `runs/gnn_ppo/model_gnn_frozen.pt` — pesos congelados para avaliação zero-shot.
-- `runs/gnn_ppo/training_log.csv` — curva de aprendizado (reward, losses, entropy).
-
-#### Baseline MLP+PPO (comparação)
-
-```bash
-conda run -n grams python -m grams_env.agents.mlp.train_mlp \
-    --num_ues 20 \
-    --iterations 500 \
-    --seed 42 \
-    --save_dir runs/mlp_ppo
-```
-
-#### Avaliação Zero-Shot (GNN com V diferente do treino)
-
-```python
-import torch
-from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
-from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
-
-# Carrega modelo treinado com V=20
-policy = GNNActorCritic(in_features=3, hidden_dim=64, num_layers=2,
-                         num_heads=4, num_rbs=50)
-policy.load_state_dict(torch.load("runs/gnn_ppo/model_gnn_frozen.pt"))
-policy.eval()
-
-# Infere com V=100 (zero-shot — sem re-treinamento)
-env = OpenRAN_RBA_Env(num_ues=100)
-obs, _ = env.reset(seed=0)
-
-with torch.no_grad():
-    action, log_prob, value = policy.act(obs)  # ✅ funciona com V=100
-
-obs, reward, _, _, info = env.step(action)
-print(f"Zero-shot reward: {reward:.2f}")
-print(f"Throughput      : {info['total_throughput_bits']:.0f} bits")
-```
-
-> **Por que o MLP falha no zero-shot?** O `MLPActorCritic` achata todas as features em um vetor de dimensão fixa `V×3 + V×(V-1)/2`. Com V=100, o vetor tem dimensão diferente do input esperado pelo modelo treinado com V=20 — resultando em `RuntimeError`. A GNN não tem essa limitação.
-
 ---
 
 ## 📐 Baselines Clássicas (branch `baselines`)
@@ -444,6 +304,148 @@ conda run -n grams python -m pytest tests/ -v
 | **Total** | **111** | ✅ **0 failed** |
 
 ---
+
+## ⚙️ Especificações Técnicas do Modelo 3GPP TR 36.873 (UMa)
+
+| Parâmetro | Valor Padrão | Descrição |
+|---|---|---|
+| **Frequência Portadora** | 2.0 GHz | Frequência de operação |
+| **Largura de Banda** | 10.0 MHz | Total do sistema |
+| **Resource Blocks (K)** | 50 RBs | 180 kHz por RB |
+| **TTI (Time Transmission Interval)** | 1 ms | Duração de cada passo (`step`) |
+| **Potência gNodeB** | 46 dBm | Potência de transmissão do gNB |
+| **Raio da Célula** | 500 m | Célula Urban Macro (UMa) |
+| **Limiar de SINR** | 14.8 dB | Mínimo necessário para decodificação |
+| **Modelos de Mobilidade** | 0, 3, 20 km/h | Perfis atribuídos por UE |
+| **Perfis de Tráfego CBR** | 1000, 4000 B/TTI | Carga constante por UE |
+
+---
+
+## 🤖 Agentes de Aprendizado por Reforço (branch `agent_GRAMS`)
+
+O pacote `grams_env/agents/` contém a implementação completa de dois agentes PPO para alocação de RBs, além do treinador genérico.
+
+### Arquitetura dos Modelos
+
+#### 1. Extrator de Características GNN — `GraphEncoder`
+
+Rede neural em grafos baseada em **GATConv** (Graph Attention Network) que transforma as observações estruturadas do simulador em *embeddings* por nó:
+
+```
+Input (V, 3) → Linear(3→64) → [GATConv(64, heads=4) + ELU + LayerNorm + Residual] × 2 → H^(L) (V, 64)
+```
+
+- **L = 2** camadas de convolução em grafos.
+- **4 attention heads** com média (não concatenação), mantendo output em `hidden_dim=64`.
+- **Residual connections** em cada camada para estabilidade do treinamento.
+- **Edge attributes**: o ganho de interferência da `adjacency_matrix` é passado como peso de atenção (`edge_dim=1`), permitindo que a GNN priorize vizinhos com maior interferência co-canal.
+- **Invariante ao número de nós**: o *message passing* processa cada nó independentemente do tamanho do grafo, permitindo **generalização zero-shot** — treinar com V=20 UEs e inferir com V=50, 100, 200.
+
+#### 2. Agente GNN+PPO — `GNNActorCritic` *(artigo principal)*
+
+```
+Actor:  H^(L) (V, 64) → Linear(64→32) → ReLU → Linear(32→1) → logits (V,) → Categorical → K amostras
+Critic: H^(L) (V, 64) → MeanPool → (64,) → Linear(64→32) → ReLU → Linear(32→1) → V(s)
+```
+
+- O **Actor** produz uma distribuição `Categorical` sobre os V UEs via logits por nó, depois amostra K=50 vezes para alocar cada RB.
+- O **Critic** usa *global mean pooling* dos embeddings para estimar o valor do estado.
+- Por ser baseado em GNN, o modelo **funciona com qualquer V** em tempo de inferência.
+
+#### 3. Baseline MLP+PPO — `MLPActorCritic` *(comparação)*
+
+```
+Input: flatten(node_features) + upper_triangle(adjacency_matrix) → vetor fixo de dim = V×3 + V×(V-1)/2
+Actor:  flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→K×V) → Categorical por RB
+Critic: flat → Linear(→256) → ReLU → Linear(→128) → ReLU → Linear(→1)
+```
+
+- O input é um vetor **de tamanho fixo**, determinado por V no momento da criação do modelo.
+- **Não pode inferir com V diferente do treinamento** — isso prova a limitação da abordagem MLP frente à GNN no artigo.
+
+#### 4. Treinador PPO Genérico — `PPOTrainer`
+
+Implementação própria do **Proximal Policy Optimization** (Schulman et al. 2017), compatível com qualquer backbone que implemente `act()` e `evaluate()`:
+
+| Hiperparâmetro | Default | Descrição |
+|---|---|---|
+| `lr` | `3e-4` | Learning rate (Adam) |
+| `gamma` | `0.99` | Fator de desconto |
+| `gae_lambda` | `0.95` | Parâmetro λ do GAE |
+| `clip_eps` | `0.2` | Epsilon do clipping PPO |
+| `epochs` | `10` | Épocas de atualização por rollout |
+| `batch_size` | `64` | Tamanho do mini-batch |
+| `rollout_steps` | `2048` | Steps coletados por iteração |
+| `ent_coef` | `0.01` | Coeficiente do bônus de entropia |
+| `vf_coef` | `0.5` | Coeficiente da loss de valor |
+| `max_grad_norm` | `0.5` | Clipping de gradiente |
+
+Fórmula da loss total:
+```
+L = L_clip(π) + vf_coef × L_value − ent_coef × H(π)
+```
+
+---
+
+### Como Treinar
+
+#### Agente GNN+PPO (cenário de treino esparso: V=20 UEs)
+
+```bash
+# Treinamento padrão — 500 iterações com seed 42
+conda run -n grams python -m grams_env.agents.gnn.train_gnn \
+    --num_ues 20 \
+    --iterations 500 \
+    --rollout_steps 2048 \
+    --seed 42 \
+    --device cpu \
+    --save_dir runs/gnn_ppo
+```
+
+O treinamento salva:
+- `runs/gnn_ppo/checkpoint_<iter>.pt` — checkpoints a cada 50 iterações.
+- `runs/gnn_ppo/checkpoint_final.pt` — modelo ao final.
+- `runs/gnn_ppo/model_gnn_frozen.pt` — pesos congelados para avaliação zero-shot.
+- `runs/gnn_ppo/training_log.csv` — curva de aprendizado (reward, losses, entropy).
+
+#### Baseline MLP+PPO (comparação)
+
+```bash
+conda run -n grams python -m grams_env.agents.mlp.train_mlp \
+    --num_ues 20 \
+    --iterations 500 \
+    --seed 42 \
+    --save_dir runs/mlp_ppo
+```
+
+#### Avaliação Zero-Shot (GNN com V diferente do treino)
+
+```python
+import torch
+from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
+from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
+
+# Carrega modelo treinado com V=20
+policy = GNNActorCritic(in_features=3, hidden_dim=64, num_layers=2,
+                         num_heads=4, num_rbs=50)
+policy.load_state_dict(torch.load("runs/gnn_ppo/model_gnn_frozen.pt"))
+policy.eval()
+
+# Infere com V=100 (zero-shot — sem re-treinamento)
+env = OpenRAN_RBA_Env(num_ues=100)
+obs, _ = env.reset(seed=0)
+
+with torch.no_grad():
+    action, log_prob, value = policy.act(obs)  # ✅ funciona com V=100
+
+obs, reward, _, _, info = env.step(action)
+print(f"Zero-shot reward: {reward:.2f}")
+print(f"Throughput      : {info['total_throughput_bits']:.0f} bits")
+```
+
+> **Por que o MLP falha no zero-shot?** O `MLPActorCritic` achata todas as features em um vetor de dimensão fixa `V×3 + V×(V-1)/2`. Com V=100, o vetor tem dimensão diferente do input esperado pelo modelo treinado com V=20 — resultando em `RuntimeError`. A GNN não tem essa limitação.
+
+
 
 ## 👨‍💻 Créditos
 

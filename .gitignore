@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 runs/
 *.pt
+
+# Ignorados a pedido do usuário
+TODO.md
+monolitico/
+latex/
+*.code-workspace
