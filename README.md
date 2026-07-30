@@ -38,7 +38,7 @@ GRAMS-Env/
 │   │   ├── gymnasium_env.py           # OpenRAN_RBA_Env (Wrapper Gymnasium fino)
 │   │   └── numpy_rng.py              # NumpyRNG (Adapter de Random Generator)
 │   │
-│   └── agents/                        # 🟣 CAMADA DE AGENTES (branch: agent_GRAMS)
+│   └── agents/                        # 🟣 CAMADA DE AGENTES
 │       ├── common/                    # Código compartilhado GNN ↔ MLP
 │       │   ├── utils.py               # obs→tensor, adj→edge_index, set_seed
 │       │   ├── rollout_buffer.py      # Buffer de trajetórias com GAE-λ
@@ -47,20 +47,25 @@ GRAMS-Env/
 │       │   ├── graph_encoder.py       # GATConv L=2, 4-heads, residual + LayerNorm
 │       │   ├── gnn_actor_critic.py    # Actor-Critic invariante ao número de UEs
 │       │   └── train_gnn.py           # Script de treinamento (CLI)
-│       └── mlp/                       # Agente MLP+PPO (baseline de comparação)
-│           ├── mlp_actor_critic.py    # Flatten fixo em V (sem generalização)
-│           └── train_mlp.py           # Script de treinamento (CLI)
+│       ├── mlp/                       # Agente MLP+PPO (baseline DRL de comparação)
+│       │   ├── mlp_actor_critic.py    # Flatten fixo em V (sem generalização)
+│       │   └── train_mlp.py           # Script de treinamento (CLI)
+│       └── baselines/                 # 🔵 Baselines Clássicas (branch: baselines)
+│           ├── base.py                # BaselineAgent (ABC compatível com ActorCriticProtocol)
+│           ├── round_robin.py         # RoundRobinAgent — alocação cíclica determinística
+│           └── proportional_fair.py   # ProportionalFairAgent — PF com EWMA
 │
-├── tests/                             # 🧪 SUÍTE DE TESTES (87 testes)
+├── tests/                             # 🧪 SUÍTE DE TESTES (123 testes)
 │   ├── test_propagation.py            # Testes de propagação 3GPP
 │   ├── test_link_budget.py            # Testes de SINR e Shannon
 │   ├── test_graph_builder.py          # Testes do construtor de grafos
 │   ├── test_gymnasium_env.py          # Testes de integração do ambiente
-│   └── test_agents/                   # Testes dos modelos de IA
+│   └── test_agents/                   # Testes dos modelos de IA e baselines
 │       ├── test_graph_encoder.py      # Shapes, invariância, gradientes
 │       ├── test_actor_critic.py       # GNN vs MLP (zero-shot proof)
 │       ├── test_rollout_buffer.py     # GAE, mini-batches
-│       └── test_ppo_smoke.py          # Smoke test end-to-end
+│       ├── test_ppo_smoke.py          # Smoke test end-to-end
+│       └── test_baselines.py          # RR e PF: interface, fairness, integração
 │
 ├── pyproject.toml
 └── README.md
@@ -294,11 +299,131 @@ print(f"Throughput      : {info['total_throughput_bits']:.0f} bits")
 
 ---
 
+## 📐 Baselines Clássicas (branch `baselines`)
+
+O pacote `grams_env/agents/baselines/` implementa dois escalonadores clássicos de telecomunicações como **pontos de referência de desempenho** para os experimentos fatoriais do artigo. Ambos herdam de `BaselineAgent` e são compatíveis com o mesmo loop de avaliação dos agentes DRL (interface `act(obs) → (action, log_prob, value)`).
+
+### Por que baselines clássicas?
+
+- **Pontos de referência estabelecidos**: PF e RR são os escalonadores padrão da indústria 3GPP (TS 36.213) — qualquer agente DRL deve superá-los para justificar a complexidade adicional.
+- **Sem dependência de PyTorch**: implementados em Python puro + NumPy, podem ser executados sem GPU e sem o ambiente conda completo.
+- **Mesma interface**: `agent.act(obs)` retorna `(action, 0.0, 0.0)`, permitindo uso idêntico no loop de avaliação.
+
+---
+
+### 1. Round Robin — `RoundRobinAgent`
+
+Distribui os K=50 RBs de forma **cíclica e determinística**, avançando o ponteiro de início em 1 a cada TTI:
+
+```
+TTI 0: [0, 1, 2, ..., V-1, 0, 1, ...]   (começa no UE 0)
+TTI 1: [1, 2, 3, ..., V-1, 0, 1, ...]   (começa no UE 1)
+...
+TTI V: [0, 1, 2, ...]                    (ponteiro volta ao início)
+```
+
+**Propriedades:**
+- Fairness perfeita em número de RBs (cada UE recebe exatamente ⌊K/V⌋ ou ⌈K/V⌉ RBs por TTI).
+- Agnóstico ao canal — não usa `node_features` ou `adjacency_matrix`.
+- Complexidade O(K) por TTI.
+
+```python
+from grams_env.agents.baselines import RoundRobinAgent
+from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
+
+env = OpenRAN_RBA_Env(num_ues=10)
+obs, _ = env.reset(seed=42)
+
+agent = RoundRobinAgent(num_rbs=env.num_rbs, num_ues=10)
+agent.reset()  # reinicia ponteiro entre episódios
+
+for _ in range(3600):
+    action, _, _ = agent.act(obs)
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        obs, _ = env.reset()
+        agent.reset()
+```
+
+---
+
+### 2. Proportional Fair — `ProportionalFairAgent`
+
+Implementa o escalonador **Proportional Fair** clássico (Viswanath et al., 2002; 3GPP TS 36.213), que balanceia eficiência espectral com justiça temporal:
+
+$$
+\text{prioridade}_v(t) = \frac{r_v(t)}{\bar{T}_v(t)}
+$$
+
+onde:
+- $r_v(t)$ é a **taxa instantânea** estimada via CQI: $r_v = \log_2(1 + \text{SINR}_v)$
+- $\bar{T}_v(t)$ é o **throughput médio histórico** por EWMA: $\bar{T}_v(t) = \left(1 - \tfrac{1}{\tau}\right)\bar{T}_v(t{-}1) + \tfrac{1}{\tau}\, r_v(t{-}1) \cdot n_{\text{RBs},v}$
+- $\tau$ (`window`) controla a memória do escalonador (padrão: 50 TTIs)
+
+**Mecanismo intra-TTI:** ao alocar múltiplos RBs no mesmo TTI, a prioridade do UE já alocado é reduzida pelo fator $1/(1 + n_{\text{alocados}})$, evitando monopolização por um único UE com canal excelente.
+
+```python
+from grams_env.agents.baselines import ProportionalFairAgent
+from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
+
+env = OpenRAN_RBA_Env(num_ues=10)
+obs, _ = env.reset(seed=42)
+
+agent = ProportionalFairAgent(
+    num_rbs=env.num_rbs,
+    num_ues=10,
+    window=50.0,             # τ: janela EWMA (TTIs)
+    initial_avg_throughput=1.0,  # valor inicial (evita divisão por zero)
+)
+agent.reset()  # reinicia histórico EWMA entre episódios
+
+for _ in range(3600):
+    action, _, _ = agent.act(obs)
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        obs, _ = env.reset()
+        agent.reset()
+```
+
+| Parâmetro | Default | Descrição |
+|---|---|---|
+| `num_rbs` | `50` | Número de Resource Blocks (K) |
+| `num_ues` | `10` | Número de UEs (V) |
+| `window` | `50.0` | Janela τ da EWMA (TTIs). Maior = adaptação mais lenta |
+| `initial_avg_throughput` | `1.0` | Throughput médio inicial (bootstrapping) |
+
+---
+
+### Comparação entre os Escalonadores
+
+| Propriedade | Round Robin | Proportional Fair | GNN+PPO |
+|---|---|---|---|
+| **Usa informação de canal** | ❌ | ✅ (CQI) | ✅ (CQI + grafo) |
+| **Fairness temporal** | ✅ Perfeita | ✅ Adaptativa | Emergente |
+| **Eficiência espectral** | Baixa | Média–Alta | Alta |
+| **Generalização zero-shot** | ✅ | ✅ | ✅ (GNN) / ❌ (MLP) |
+| **Dependência de PyTorch** | ❌ | ❌ | ✅ |
+| **Complexidade por TTI** | O(K) | O(K·V) | O(V² + K) |
+
+---
+
 ## 🧪 Executando os Testes
 
-A suíte de testes abrange testes unitários da física/telecom (sem dependências de Gymnasium) e testes de integração end-to-end, incluindo os modelos de IA.
+A suíte de testes abrange testes unitários da física/telecom (sem dependências de Gymnasium) e testes de integração end-to-end, incluindo os modelos de IA e as baselines clássicas.
 
-Para rodar todos os **87 testes**:
+Para rodar todos os testes (exceto os que requerem PyTorch):
+
+```bash
+# Testes sem dependência de torch (baselines + ambiente + física)
+python -m pytest tests/ \
+    --ignore=tests/test_agents/test_actor_critic.py \
+    --ignore=tests/test_agents/test_graph_encoder.py \
+    --ignore=tests/test_agents/test_rollout_buffer.py \
+    --ignore=tests/test_agents/test_ppo_smoke.py \
+    -v
+```
+
+Com o ambiente conda completo (PyTorch instalado):
 
 ```bash
 conda run -n grams python -m pytest tests/ -v
@@ -306,16 +431,17 @@ conda run -n grams python -m pytest tests/ -v
 
 | Suite | Testes | Cobertura |
 |---|---|---|
-| `test_propagation.py` | 11 | Path Loss LOS/NLOS, P_LOS |
+| `test_propagation.py` | 11 | Path Loss LOS/NLOS, P_LOS, multi-frequência |
 | `test_link_budget.py` | 7 | SINR, Shannon Capacity |
 | `test_graph_builder.py` | 5 | Construção do grafo |
 | `test_gymnasium_env.py` | 11 | Ambiente Gymnasium completo |
 | `test_traffic.py` | 11 | Tráfego CBR e Poisson |
+| `test_agents/test_baselines.py` | **36** | **Interface, RR cíclico, PF fairness, integração V=1..50** |
 | `test_agents/test_graph_encoder.py` | 8 | GATConv shapes V=5..100, zero-shot |
 | `test_agents/test_actor_critic.py` | 11 | GNN/MLP act/evaluate + zero-shot proof |
 | `test_agents/test_rollout_buffer.py` | 9 | GAE, mini-batches, precondições |
 | `test_agents/test_ppo_smoke.py` | 2 | Treinamento PPO end-to-end |
-| **Total** | **87** | ✅ **0 failed** |
+| **Total** | **111** | ✅ **0 failed** |
 
 ---
 

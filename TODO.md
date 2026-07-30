@@ -26,7 +26,7 @@ Classes Python puras que herdam da mesma interface do agente e implementam:
 * **Proportional Fair (PF):** Aloca RBs balanceando taxa instantânea e throughput médio histórico.
 * **Round Robin (RR):** Alocação cíclica determinística.
 
-#### 4. Pipeline de Experimentos e Métricas
+#### 4. Pipeline de Experimentos e Métricas - branch **pipeline_metrics**
 
 * **Exportador de Telemetria/Resultados:** Módulo para calcular e salvar em arquivos CSV/HDF5 as 3 métricas do artigo:
 1. Eficiência Espectral do Sistema ($\text{bps/Hz}$).
