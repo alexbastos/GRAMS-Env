@@ -110,16 +110,21 @@ conda create -n grams python=3.12 -y
 conda activate grams
 ```
 
-### 2. Instalar PyTorch (CUDA)
-
+### 2. Instalar PyTorch
+### 2.1 Cuda (GPU)
 ```bash
 pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu126
+```
+
+### 2.2 CPU
+```bash
+pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cpu
 ```
 
 ### 3. Instalar dependências do projeto
 
 ```bash
-pip install torch_geometric gymnasium numpy pytest
+pip install torch_geometric gymnasium "numpy<2" pytest
 ```
 
 > **Nota:** `numpy<2` é necessário para compatibilidade com o PyTorch 2.2.x.

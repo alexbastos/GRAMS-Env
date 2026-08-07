@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 
 from grams_env.agents.common.ppo_trainer import PPOConfig, PPOTrainer
+from grams_env.agents.common.ppo_vector_trainer import AsyncVectorPPOTrainer
 from grams_env.agents.common.utils import set_seed
 from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
 from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
@@ -50,10 +51,31 @@ def main() -> None:
         "--lr", type=float, default=3e-4,
         help="Learning rate (default: 3e-4).",
     )
+    parser.add_argument(
+        "--num_envs", type=int, default=1,
+        help=(
+            "Número de ambientes paralelos para AsyncVectorEnv. "
+            "Use 1 para o PPOTrainer sequencial original (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--torch_threads", type=int, default=None,
+        help=(
+            "Número de threads intra-op do PyTorch em CPU. "
+            "Útil em HPC para evitar oversubscription."
+        ),
+    )
     args = parser.parse_args()
 
     # Reproducibilidade
     set_seed(args.seed)
+
+    # Em treinamento CPU com muitos processos de ambiente, limitar threads do
+    # PyTorch evita oversubscription (ex.: 32 envs × BLAS multithread).
+    if args.torch_threads is not None:
+        import torch
+        torch.set_num_threads(args.torch_threads)
+        torch.set_num_interop_threads(1)
 
     # Ambiente
     env = OpenRAN_RBA_Env(num_ues=args.num_ues)
@@ -64,6 +86,13 @@ def main() -> None:
     print(f"  RBs           : {env.num_rbs}")
     print(f"  Iterações     : {args.iterations}")
     print(f"  Rollout Steps : {args.rollout_steps}")
+    print(f"  Num Envs      : {args.num_envs}")
+    if args.num_envs > 1:
+        steps_per_env = -(-args.rollout_steps // args.num_envs)
+        print(f"  Steps/Env     : {steps_per_env}")
+        print(f"  Samples/Roll. : {steps_per_env * args.num_envs}")
+    if args.torch_threads is not None:
+        print(f"  Torch Threads : {args.torch_threads}")
     print(f"  Seed          : {args.seed}")
     print(f"  Device        : {args.device}")
     print(f"  Save Dir      : {args.save_dir}")
@@ -92,12 +121,25 @@ def main() -> None:
     )
 
     # Trainer
-    trainer = PPOTrainer(
-        policy=policy,
-        env=env,
-        config=config,
-        save_dir=Path(args.save_dir),
-    )
+    # - num_envs == 1: mantém o comportamento original, com um único ambiente.
+    # - num_envs > 1 : usa AsyncVectorEnv para paralelizar env.step() na CPU.
+    if args.num_envs == 1:
+        trainer = PPOTrainer(
+            policy=policy,
+            env=env,
+            config=config,
+            save_dir=Path(args.save_dir),
+        )
+    else:
+        env.close()
+        trainer = AsyncVectorPPOTrainer(
+            policy=policy,
+            num_ues=args.num_ues,
+            num_envs=args.num_envs,
+            config=config,
+            save_dir=Path(args.save_dir),
+            seed=args.seed,
+        )
 
     # Treina
     trainer.train()

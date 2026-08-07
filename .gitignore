@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 runs/
 *.pt
+.venv
 
 # Ignorados a pedido do usuário
 TODO.md
