@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -14,6 +15,8 @@
 
 # Diretório do projeto no Scratch
 WORKING_DIR="/scratch/ufsj/hpc4agents-br/iago.oliveira3/GRAMS-Env"
+CONDA_ENV_PREFIX="${WORKING_DIR}/.venv"
+export PYTHON_BIN="${CONDA_ENV_PREFIX}/bin/python"
 
 cd "${WORKING_DIR}" || exit 1
 
@@ -27,9 +30,26 @@ module purge
 module load anaconda3/2024.02_sequana
 
 
-# Ativa o ambiente virtual já preparado
+# Carrega o suporte ao conda para disponibilizar bibliotecas dinâmicas do módulo,
+# mas a execução do projeto usa PYTHON_BIN absoluto para não depender de PATH.
 source /scratch/app_sequana/anaconda3/2024.02/etc/profile.d/conda.sh
-conda activate ./.venv
+conda activate "${CONDA_ENV_PREFIX}" || true
+
+if [ ! -x "${PYTHON_BIN}" ]; then
+    echo "❌ PYTHON_BIN não existe ou não é executável: ${PYTHON_BIN}"
+    exit 1
+fi
+
+# Diagnóstico explícito: se o job estiver usando o Python errado, isso aparece
+# no .out/.err antes de iniciar o treinamento.
+echo "CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-<unset>}"
+echo "CONDA_PREFIX=${CONDA_PREFIX:-<unset>}"
+echo "Python no PATH: $(command -v python || true)"
+echo "PYTHON_BIN=${PYTHON_BIN}"
+"${PYTHON_BIN}" --version
+conda info --envs
+"${PYTHON_BIN}" -c "import gymnasium; print('gymnasium version:', gymnasium.__version__)"
+"${PYTHON_BIN}" -c "import torch; print('torch version:', torch.__version__)"
 
 
 # Evita oversubscription: cada subprocesso do AsyncVectorEnv/NumPy usa 1 thread.

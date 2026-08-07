@@ -2,8 +2,9 @@
 # -----------------------------------------------------------------------------
 # Script para iniciar os treinamentos dos modelos GNN e MLP no GRAMS-Env.
 #
-# NOTA: Garanta que você está com o ambiente conda ativado antes de rodar.
-# Comando: conda activate grams
+# NOTA: Garanta que você está com o ambiente conda ativado antes de rodar,
+# ou defina PYTHON_BIN apontando para o interpretador do ambiente.
+# Exemplo: export PYTHON_BIN=/caminho/do/projeto/.venv/bin/python
 # -----------------------------------------------------------------------------
 
 usage() {
@@ -14,11 +15,15 @@ usage() {
     echo "  -n NUM_ENVS        Ambientes paralelos no treino GNN (default: GRAMS_NUM_ENVS ou 1)"
     echo "  -t TORCH_THREADS   Threads intra-op do PyTorch no treino GNN (default: GRAMS_TORCH_THREADS ou não define)"
     echo "  -h                 Mostra esta ajuda"
+    echo ""
+    echo "Variáveis de ambiente:"
+    echo "  PYTHON_BIN          Interpretador Python a usar (default: python)"
 }
 
 DEVICE="cuda"
 NUM_ENVS="${GRAMS_NUM_ENVS:-1}"
 TORCH_THREADS="${GRAMS_TORCH_THREADS:-}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 while getopts ":d:n:t:h" opt; do
     case "$opt" in
@@ -68,9 +73,18 @@ if [ -n "$TORCH_THREADS" ]; then
     fi
 fi
 
+if [ ! -x "$PYTHON_BIN" ]; then
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        echo "❌ PYTHON_BIN inválido ou não executável: '$PYTHON_BIN'."
+        usage
+        exit 1
+    fi
+fi
+
 echo "============================================================"
 echo " INICIANDO TREINAMENTO DOS AGENTES DE APRENDIZADO POR REFORÇO"
 echo "============================================================"
+echo "Python          : $PYTHON_BIN"
 echo "Device selecionado: $DEVICE"
 echo "Ambientes GNN   : $NUM_ENVS"
 if [ -n "$TORCH_THREADS" ]; then
@@ -82,7 +96,7 @@ echo ""
 echo "[1/2] Iniciando Treinamento: Agente GNN + PPO (Cenário de V=20 UEs)..."
 echo "Isso pode demorar várias horas dependendo da máquina."
 GNN_CMD=(
-    python -m grams_env.agents.gnn.train_gnn
+    "$PYTHON_BIN" -m grams_env.agents.gnn.train_gnn
     --num_ues 20
     --iterations 500
     --rollout_steps 2048
@@ -108,7 +122,7 @@ echo ""
 
 # 2. Treinamento da Baseline MLP+PPO
 echo "[2/2] Iniciando Treinamento: Baseline MLP + PPO (Cenário de V=20 UEs)..."
-python -m grams_env.agents.mlp.train_mlp \
+"$PYTHON_BIN" -m grams_env.agents.mlp.train_mlp \
     --num_ues 20 \
     --iterations 500 \
     --seed 42 \
