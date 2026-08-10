@@ -101,13 +101,20 @@ Abaixo estão os pontos de aderência entre a modelagem e a pesquisa teórica:
 
 ## 🚀 Instalação
 
-### 1. Criar ambiente conda (Python 3.12)
+Para configuração e preparação do ambiente, execute o script `prepare_env.sh`, ou use as instruções abaixo.
 
-> **Por quê Python 3.12?** O PyTorch e o PyTorch Geometric ainda não têm wheels oficiais para Python 3.13+.
+### 1. Criar ambiente Python (Python 3.10.16)
+
+> **Por quê Python 3.10.16?** O PyTorch e o PyTorch Geometric ainda não têm wheels oficiais para Python 3.13+.
 
 ```bash
-conda create -n grams python=3.12 -y
-conda activate grams
+module purge
+# Carregar módulo Python 3.10.16
+module load python/3.10.16_sequana
+# Cria um ambiente virtual em .venv
+python -m venv .venv
+# Ativa o ambiente virtual
+source .venv/bin/activate
 ```
 
 ### 2. Instalar PyTorch

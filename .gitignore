@@ -5,6 +5,7 @@ __pycache__/
 runs/
 *.pt
 .venv
+job/job_grams*
 
 # Ignorados a pedido do usuário
 TODO.md
