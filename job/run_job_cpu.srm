@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

@@ -1,0 +1,67 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --partition=sequana_cpu
+#SBATCH --job-name=test_grams_cpu
+#SBATCH --cpus-per-task=42
+#SBATCH --mem=80G
+#SBATCH --time=24:00:00
+#SBATCH --output=job_test_grams_cpu_%j.out
+#SBATCH --error=job_test_grams_cpu_%j.err
+
+
+# Diretório do projeto no Scratch
+WORKING_DIR="/scratch/ufsj/hpc4agents-br/iago.oliveira3/GRAMS-Env"
+PYTHON_ENV_PREFIX="${WORKING_DIR}/.venv"
+
+cd "${WORKING_DIR}" || exit 1
+
+
+# Mostra o nó utilizado
+scontrol show hostnames "${SLURM_NODELIST}"
+
+
+# Carrega os módulos do ambiente
+module purge
+module load python/3.10.16_sequana
+
+# Configura o ambiente Python
+source "${PYTHON_ENV_PREFIX}/bin/activate"
+
+# Diagnóstico explícito: se o job estiver usando o Python errado, isso aparece
+# no .out/.err antes de iniciar o treinamento.
+echo "Python no PATH: $(command -v python || true)"
+python3 --version
+python3 -c "import gymnasium; print('gymnasium version:', gymnasium.__version__)"
+python3 -c "import torch; print('torch version:', torch.__version__)"
+
+
+# Evita oversubscription: cada subprocesso do AsyncVectorEnv/NumPy usa 1 thread.
+# Sem isso, 32 ambientes podem virar centenas de threads BLAS/OpenMP competindo
+# pelos mesmos 42 núcleos do nó.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export BLIS_NUM_THREADS=1
+
+# Configuração do treinamento CPU vetorizado da GNN.
+# Em nó com 42 núcleos, 32 ambientes deixam folga para o processo principal,
+# PyTorch, logging e overhead do sistema.
+export GRAMS_NUM_ENVS=32
+export GRAMS_TORCH_THREADS=4
+export PYTHONUNBUFFERED=1
+
+
+echo "OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+echo "MKL_NUM_THREADS=${MKL_NUM_THREADS}"
+echo "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS}"
+echo "GRAMS_NUM_ENVS=${GRAMS_NUM_ENVS}"
+echo "GRAMS_TORCH_THREADS=${GRAMS_TORCH_THREADS}"
+
+
+# Executa o experimento
+srun ./run_test_zeroshot.sh

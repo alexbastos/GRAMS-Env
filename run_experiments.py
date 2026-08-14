@@ -66,9 +66,18 @@ MLP_MODEL_PATH = "runs/mlp_ppo/checkpoint_final.pt"
 TRAIN_NUM_UES = 20
 
 
+def _load_model_state_dict(model_path: str, device: str):
+    """Carrega pesos aceitando state_dict direto ou checkpoint de treino."""
+    import torch
+
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        return checkpoint["model_state_dict"]
+    return checkpoint
+
+
 def _load_gnn_policy(device: str = "cpu"):
     """Carrega o modelo GNN treinado com V=20 (pesos congelados)."""
-    import torch
     from grams_env.agents.gnn.gnn_actor_critic import GNNActorCritic
 
     policy = GNNActorCritic(
@@ -79,9 +88,7 @@ def _load_gnn_policy(device: str = "cpu"):
         num_rbs=50,
         device=device,
     )
-    policy.load_state_dict(
-        torch.load(GNN_MODEL_PATH, map_location=device, weights_only=True)
-    )
+    policy.load_state_dict(_load_model_state_dict(GNN_MODEL_PATH, device))
     policy.eval()
     return policy
 
@@ -92,7 +99,6 @@ def _load_mlp_policy(num_ues: int, device: str = "cpu"):
     IMPORTANTE: O MLP só funciona com num_ues == TRAIN_NUM_UES.
     Para outros valores de V, retorna None (RuntimeError esperado).
     """
-    import torch
     from grams_env.agents.mlp.mlp_actor_critic import MLPActorCritic
 
     if num_ues != TRAIN_NUM_UES:
@@ -103,9 +109,7 @@ def _load_mlp_policy(num_ues: int, device: str = "cpu"):
         num_rbs=50,
         device=device,
     )
-    policy.load_state_dict(
-        torch.load(MLP_MODEL_PATH, map_location=device, weights_only=True)
-    )
+    policy.load_state_dict(_load_model_state_dict(MLP_MODEL_PATH, device))
     policy.eval()
     return policy
 
@@ -118,6 +122,7 @@ def run_single_episode(
     freq_ghz: float,
     seed: int,
     max_steps: int,
+    device: str,
 ):
     """Executa e retorna o resultado de uma única rodada."""
     config = CellConfig(
@@ -136,10 +141,10 @@ def run_single_episode(
 
     # --- Agentes DRL ---
     elif agent_name == "GNN+PPO":
-        agent = _load_gnn_policy()
+        agent = _load_gnn_policy(device)
 
     elif agent_name == "MLP+PPO":
-        agent = _load_mlp_policy(num_ues)
+        agent = _load_mlp_policy(num_ues, device)
         if agent is None:
             # MLP não pode inferir com V != V_treino → retorna None
             return None
@@ -164,18 +169,23 @@ def _build_combinations(agent_names: list[str]) -> list[tuple]:
     return combinations
 
 
-def _check_models(agent_names: list[str]) -> None:
-    """Verifica se os modelos treinados existem antes de iniciar."""
-    if "GNN+PPO" in agent_names and not os.path.exists(GNN_MODEL_PATH):
-        raise FileNotFoundError(
-            f"❌ Modelo GNN não encontrado em '{GNN_MODEL_PATH}'.\n"
-            f"   Execute ./run_training.sh primeiro para treinar o modelo."
-        )
-    if "MLP+PPO" in agent_names and not os.path.exists(MLP_MODEL_PATH):
-        raise FileNotFoundError(
-            f"❌ Modelo MLP não encontrado em '{MLP_MODEL_PATH}'.\n"
-            f"   Execute ./run_training.sh primeiro para treinar o modelo."
-        )
+def _check_models(agent_names: list[str], device: str) -> None:
+    """Verifica se os modelos treinados existem e podem ser carregados."""
+    if "GNN+PPO" in agent_names:
+        if not os.path.exists(GNN_MODEL_PATH):
+            raise FileNotFoundError(
+                f"❌ Modelo GNN não encontrado em '{GNN_MODEL_PATH}'.\n"
+                f"   Execute ./run_training.sh primeiro para treinar o modelo."
+            )
+        _load_gnn_policy(device)
+
+    if "MLP+PPO" in agent_names:
+        if not os.path.exists(MLP_MODEL_PATH):
+            raise FileNotFoundError(
+                f"❌ Modelo MLP não encontrado em '{MLP_MODEL_PATH}'.\n"
+                f"   Execute ./run_training.sh primeiro para treinar o modelo."
+            )
+        _load_mlp_policy(TRAIN_NUM_UES, device)
 
 
 def main() -> None:
@@ -229,8 +239,8 @@ def main() -> None:
     else:  # all
         agent_names = ["RoundRobin", "ProportionalFair", "GNN+PPO", "MLP+PPO"]
 
-    # Verifica se os modelos existem (para agentes DRL)
-    _check_models(agent_names)
+    # Verifica se os modelos existem e podem ser carregados (para agentes DRL)
+    _check_models(agent_names, args.device)
 
     # Constrói combinações (filtra MLP para V != 20)
     combinations = _build_combinations(agent_names)
@@ -264,7 +274,7 @@ def main() -> None:
         with tqdm(total=total_runs, desc="Simulando Episódios") as pbar:
             for agent, ues, speeds, cbr, freq, seed in combinations:
                 result = run_single_episode(
-                    agent, ues, speeds, cbr, freq, seed, args.steps,
+                    agent, ues, speeds, cbr, freq, seed, args.steps, args.device,
                 )
                 if result is None:
                     skipped += 1
@@ -282,7 +292,7 @@ def main() -> None:
             futures = {
                 executor.submit(
                     run_single_episode,
-                    agent, ues, speeds, cbr, freq, seed, args.steps,
+                    agent, ues, speeds, cbr, freq, seed, args.steps, args.device,
                 ): (agent, ues, speeds, cbr, freq, seed)
                 for (agent, ues, speeds, cbr, freq, seed) in combinations
             }
