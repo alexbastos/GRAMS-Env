@@ -64,4 +64,4 @@ echo "GRAMS_TORCH_THREADS=${GRAMS_TORCH_THREADS}"
 
 
 # Executa o experimento
-srun ./run_test_zeroshot.sh
+srun ./run_experiments.sh
