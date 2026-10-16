@@ -24,7 +24,7 @@ from __future__ import annotations
 import csv
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -33,6 +33,38 @@ import torch.nn as nn
 
 from grams_env.agents.common.ppo_trainer import PPOConfig
 from grams_env.infrastructure.gymnasium_env import OpenRAN_RBA_Env
+
+
+def compute_vector_gae(
+    rewards: np.ndarray,
+    values: np.ndarray,
+    bootstrap_values: np.ndarray,
+    episode_ends: np.ndarray,
+    gamma: float,
+    gae_lambda: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """GAE em (tempo, ambiente), sem conectar episódios ou ambientes.
+
+    O coletor fornece bootstrap zero para términos reais e V(final_obs) para
+    truncamentos. Ambos cortam a recursão; o fim do rollout usa bootstrap,
+    mas não tem vantagens posteriores disponíveis.
+    """
+    rewards, values, bootstrap_values = (
+        np.asarray(x, dtype=np.float64)
+        for x in (rewards, values, bootstrap_values)
+    )
+    episode_ends = np.asarray(episode_ends, dtype=bool)
+    if values.ndim != 2 or any(
+        x.shape != values.shape for x in (rewards, bootstrap_values, episode_ends)
+    ):
+        raise ValueError("GAE requer arrays com o mesmo formato (T, N).")
+    advantages = np.zeros_like(values)
+    carry = np.zeros(values.shape[1], dtype=np.float64)
+    for t in reversed(range(len(values))):
+        delta = rewards[t] + gamma * bootstrap_values[t] - values[t]
+        carry = delta + gamma * gae_lambda * (~episode_ends[t]) * carry
+        advantages[t] = carry
+    return advantages, advantages + values
 
 
 def make_openran_env(
@@ -97,6 +129,8 @@ class AsyncVectorPPOTrainer:
         save_dir: Path | str = "runs",
         seed: int = 42,
         max_steps: int = 3600,
+        env_fns: Sequence[Callable[[], gym.Env]] | None = None,
+        context: str = "spawn",
     ) -> None:
         if num_envs < 2:
             raise ValueError(
@@ -105,6 +139,10 @@ class AsyncVectorPPOTrainer:
             )
 
         self.config = config or PPOConfig()
+        if self.config.rollout_steps < 1:
+            raise ValueError("rollout_steps deve ser positivo.")
+        if env_fns is not None and len(env_fns) != num_envs:
+            raise ValueError("env_fns deve conter num_envs factories.")
         self.device = torch.device(self.config.device)
         self.policy = policy.to(self.device)
         self.num_ues = num_ues
@@ -125,11 +163,17 @@ class AsyncVectorPPOTrainer:
         self.steps_per_env = int(np.ceil(self.config.rollout_steps / self.num_envs))
         self.total_rollout_samples = self.steps_per_env * self.num_envs
 
-        env_fns = [
-            make_openran_env(num_ues, seed + rank, max_steps)
-            for rank in range(self.num_envs)
-        ]
-        self.envs = gym.vector.AsyncVectorEnv(env_fns)
+        if env_fns is None:
+            env_fns = [
+                make_openran_env(num_ues, seed + rank, max_steps)
+                for rank in range(self.num_envs)
+            ]
+        # SAME_STEP impede que um passo dedicado ao reset entre no buffer.
+        # spawn evita herdar pools de threads PyTorch/OpenMP do processo pai.
+        self.envs = gym.vector.AsyncVectorEnv(
+            env_fns, context=context,
+            autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+        )
 
         self.num_rbs = int(self.envs.single_action_space.shape[0])
         self.optimizer = torch.optim.Adam(
@@ -155,10 +199,18 @@ class AsyncVectorPPOTrainer:
         self._values: np.ndarray | None = None
         self._rewards: np.ndarray | None = None
         self._dones: np.ndarray | None = None
+        self._bootstrap_values: np.ndarray | None = None
         self._advantages: np.ndarray | None = None
         self._returns: np.ndarray | None = None
 
     def train(self) -> None:
+        """Fecha os workers também se reset, logging ou atualização falharem."""
+        try:
+            self._train()
+        finally:
+            self.envs.close()
+
+    def _train(self) -> None:
         """Executa o loop PPO completo com ambientes vetorizados."""
         self._obs, _ = self.envs.reset(seed=self.seed)
 
@@ -245,6 +297,8 @@ class AsyncVectorPPOTrainer:
             (self.steps_per_env, self.num_envs), dtype=np.float32,
         )
 
+        bootstrap_values = np.zeros_like(values)
+        terminated_steps = np.zeros_like(dones, dtype=bool)
         with torch.no_grad():
             for t in range(self.steps_per_env):
                 # Guarda observações antes do step. Cada índice t contém um
@@ -254,7 +308,7 @@ class AsyncVectorPPOTrainer:
 
                 action_batch, log_prob_batch, value_batch = self._act_batch(obs)
 
-                next_obs, reward_batch, terminated, truncated, _ = self.envs.step(
+                next_obs, reward_batch, terminated, truncated, infos = self.envs.step(
                     action_batch,
                 )
                 done_batch = np.logical_or(terminated, truncated)
@@ -264,6 +318,11 @@ class AsyncVectorPPOTrainer:
                 values[t] = value_batch
                 rewards[t] = reward_batch.astype(np.float32)
                 dones[t] = done_batch.astype(np.float32)
+                terminated_steps[t] = terminated
+                for i in np.flatnonzero(truncated & ~terminated):
+                    if "final_obs" not in infos or not infos["_final_obs"][i]:
+                        raise RuntimeError("Truncamento sem final_obs no modo SAME_STEP.")
+                    bootstrap_values[t, i] = self.policy.get_value(infos["final_obs"][i])
 
                 self._episode_rewards_running += reward_batch
                 for env_idx, done in enumerate(done_batch):
@@ -273,12 +332,19 @@ class AsyncVectorPPOTrainer:
                         )
                         self._episode_rewards_running[env_idx] = 0.0
 
-                # AsyncVectorEnv usa autoreset para ambientes finalizados nas
-                # versões modernas do Gymnasium; `next_obs` já é a observação
-                # correta para o próximo vector step.
+                # Em SAME_STEP, next_obs já contém o reset dos ambientes encerrados.
                 obs = next_obs
 
-            _, _, last_values = self._act_batch(obs)
+            # Reutiliza valores coletados nos passos normais; avalia apenas
+            # estados de fronteira, sem amostrar ações extras.
+            for t in range(self.steps_per_env - 1):
+                continuing = ~dones[t].astype(bool)
+                bootstrap_values[t, continuing] = values[t + 1, continuing]
+            for i in np.flatnonzero(~dones[-1].astype(bool)):
+                bootstrap_values[-1, i] = self.policy.get_value(
+                    {key: array[i] for key, array in obs.items()}
+                )
+            bootstrap_values[terminated_steps] = 0.0
 
         self._obs = obs
 
@@ -287,7 +353,11 @@ class AsyncVectorPPOTrainer:
         self._values = values
         self._rewards = rewards
         self._dones = dones
-        self._compute_gae(last_values.astype(np.float32))
+        self._bootstrap_values = bootstrap_values
+        self._advantages, self._returns = compute_vector_gae(
+            rewards, values, bootstrap_values, dones,
+            self.config.gamma, self.config.gae_lambda,
+        )
 
     def _act_batch(
         self,
@@ -323,45 +393,6 @@ class AsyncVectorPPOTrainer:
             value_batch[env_idx] = value
 
         return action_batch, log_prob_batch, value_batch
-
-    def _compute_gae(self, last_values: np.ndarray) -> None:
-        """Calcula GAE-λ independentemente para cada ambiente.
-
-        Os arrays têm formato `(T, N)`. O cálculo reverso preserva a estrutura
-        temporal de cada ambiente, evitando misturar a transição final de um
-        ambiente com a transição inicial de outro.
-        """
-        assert self._rewards is not None
-        assert self._values is not None
-        assert self._dones is not None
-
-        advantages = np.zeros_like(self._rewards, dtype=np.float32)
-        last_gae = np.zeros(self.num_envs, dtype=np.float32)
-
-        for t in reversed(range(self.steps_per_env)):
-            if t == self.steps_per_env - 1:
-                next_values = last_values
-                next_non_terminal = 1.0 - self._dones[t]
-            else:
-                next_values = self._values[t + 1]
-                next_non_terminal = 1.0 - self._dones[t]
-
-            delta = (
-                self._rewards[t]
-                + self.config.gamma * next_values * next_non_terminal
-                - self._values[t]
-            )
-            last_gae = (
-                delta
-                + self.config.gamma
-                * self.config.gae_lambda
-                * next_non_terminal
-                * last_gae
-            )
-            advantages[t] = last_gae
-
-        self._advantages = advantages
-        self._returns = advantages + self._values
 
     def _update_policy(self) -> dict[str, float]:
         """Atualiza a política PPO usando mini-batches achatados `T×N`."""

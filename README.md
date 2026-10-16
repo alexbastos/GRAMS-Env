@@ -399,6 +399,17 @@ L = L_clip(π) + vf_coef × L_value − ent_coef × H(π)
 
 ---
 
+#### 5. Coleta paralela — `AsyncVectorPPOTrainer`
+
+Em relação ao `master` sequencial, `grams_env/agents/common/ppo_vector_trainer.py` adiciona coleta com `AsyncVectorEnv` em subprocessos, ativada no treino GNN com `--num_envs > 1`. O `PPOTrainer` sequencial permanece como legado, sem alterações, e continua sendo usado com `--num_envs 1` (padrão).
+
+- **Rollout total:** `rollout_steps` é o alvo total, não por ambiente. Com `N = num_envs` e `T = ceil(rollout_steps / N)`, são coletadas `T*N` transições por iteração; o GAE é calculado por ambiente antes de achatar as amostras para o PPO.
+- **Inferência ainda em loop:** `_act_batch()` chama `policy.act()` para cada ambiente no processo principal; apenas os ambientes executam em paralelo.
+- **Autoreset:** requer Gymnasium >= 1.1 e configura explicitamente `SAME_STEP`, com contexto `spawn` por padrão, evitando transições artificiais de reset no rollout.
+- **Bootstrap e GAE:** a função pura `compute_vector_gae()` preserva a independência dos ambientes. Truncamentos sem término real usam `V(final_obs)`, términos reais usam bootstrap zero e ambos cortam a recursão do GAE. No fim do rollout, episódios ainda ativos usam o valor da próxima observação. O `get_value()` da GNN avalia o critic sem amostrar ações nem consumir o RNG da política.
+- **Limpeza de recursos:** os subprocessos são encerrados mesmo quando o reset inicial, a escrita dos logs ou a atualização falham.
+- **Testes:** `tests/test_agents/test_ppo_vector_trainer.py` cobre GAE, coleta `SAME_STEP`, bootstrap, snapshots, validação do número de ambientes, checkpoints e encerramento dos workers. Inclui também equivalência entre execução direta e subprocessos `spawn`, atravessando resets.
+
 ### Como Treinar
 
 #### 1. Execução Automatizada (Recomendado)

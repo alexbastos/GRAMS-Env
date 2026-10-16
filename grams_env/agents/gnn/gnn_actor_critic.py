@@ -120,6 +120,15 @@ class GNNActorCritic(nn.Module):
 
         return dist, value
 
+    @torch.no_grad()
+    def get_value(self, obs: dict[str, np.ndarray]) -> float:
+        """Bootstrap do critic sem amostrar ações nem consumir RNG da política."""
+        obs_t = obs_to_tensors(obs, self._device)
+        embeddings = self._encode(
+            obs_t["node_features"], obs_t["adjacency_matrix"],
+        )
+        return self.critic_head(embeddings.mean(dim=0)).squeeze(-1).item()
+
     def act(
         self,
         obs: dict[str, np.ndarray],

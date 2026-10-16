@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --partition=sequana_cpu
+#SBATCH --job-name=grams_comparison_cpu
+#SBATCH --cpus-per-task=42
+#SBATCH --mem=32G
+#SBATCH --time=24:00:00
+#SBATCH --output=job_grams_comparison_cpu_%j.out
+#SBATCH --error=job_grams_comparison_cpu_%j.err
+
+set -Eeuo pipefail
+WORKING_DIR="/scratch/ufsj/hpc4agents-br/iago.oliveira3/GRAMS-Env"
+cd -- "$WORKING_DIR"
+scontrol show hostnames "${SLURM_NODELIST}"
+module purge
+module load python/3.10.16_sequana
+source "${WORKING_DIR}/.venv/bin/activate"
+export PYTHON_BIN="${WORKING_DIR}/.venv/bin/python"
+
+srun bash job/run_comparison_cpu.sh "runs/comparison_${SLURM_JOB_ID}"
