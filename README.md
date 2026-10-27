@@ -410,6 +410,31 @@ Em relação ao `master` sequencial, `grams_env/agents/common/ppo_vector_trainer
 - **Limpeza de recursos:** os subprocessos são encerrados mesmo quando o reset inicial, a escrita dos logs ou a atualização falham.
 - **Testes:** `tests/test_agents/test_ppo_vector_trainer.py` cobre GAE, coleta `SAME_STEP`, bootstrap, snapshots, validação do número de ambientes, checkpoints e encerramento dos workers. Inclui também equivalência entre execução direta e subprocessos `spawn`, atravessando resets.
 
+### Normalização das features dos nós da GNN
+
+Novas instâncias de `GNNActorCritic` normalizam as entradas antes do encoder,
+no treino sequencial/paralelo e na avaliação. O ambiente, as arestas, as
+recompensas e o MLP permanecem inalterados.
+
+| Feature bruta | Transformação |
+|---|---|
+| Proxy de canal (`ganho_dB + 200`, não CQI 0–15) | `clip(x / 200, 0, 1)` |
+| Fila em bits | `max(q, 0) / (max(q, 0) + 320000)` |
+| Carga em bytes/TTI | `clip(carga / 4000, 0, 1)` |
+
+A referência de fila equivale a 10 TTIs de carga de 4000 bytes; não é uma
+capacidade máxima e não causa descarte de pacotes. São referências iniciais
+fixas, não ajustadas aos resultados da avaliação. Filas muito grandes ficam
+próximas de 1; canal e carga fora das referências são saturados.
+
+A flag e as escalas são buffers persistentes no `state_dict`, garantindo a
+mesma transformação ao carregar o modelo para zero-shot. Checkpoints legados
+sem esses buffers carregam com normalização **desativada**, preservando seu
+comportamento original. Para estudar a normalização, treine novos modelos em
+pastas separadas; não basta avaliar pesos antigos com entradas normalizadas.
+Na API Python, `normalize_features=False` permite criar uma referência sem
+scaling. Nenhum learning rate ou parâmetro PPO foi modificado.
+
 ### Como Treinar
 
 #### 1. Execução Automatizada (Recomendado)

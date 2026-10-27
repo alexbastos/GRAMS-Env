@@ -46,10 +46,16 @@ class GNNActorCritic(nn.Module):
         num_heads: int = 4,
         num_rbs: int = 50,
         device: torch.device | str = "cpu",
+        normalize_features: bool = True,
     ) -> None:
         super().__init__()
         self._device = torch.device(device)
         self.num_rbs = num_rbs
+        # Referências fixas, independentes da densidade e dos dados de avaliação.
+        # CQI aqui é ganho em dB + 200 (não índice CQI 0..15).
+        # 320000 bits equivalem a 10 TTIs com carga de 4000 bytes/TTI.
+        self.register_buffer("feature_normalization_enabled", torch.tensor(normalize_features))
+        self.register_buffer("feature_scales", torch.tensor([200.0, 320000.0, 4000.0]))
 
         # GNN Backbone
         self.encoder = GraphEncoder(
@@ -73,6 +79,37 @@ class GNNActorCritic(nn.Module):
             nn.Linear(32, 1),
         )
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        # Checkpoints legados não conhecem normalização: preservar sua política,
+        # mesmo quando o construtor atual habilita scaling para novos treinos.
+        enabled_key = prefix + "feature_normalization_enabled"
+        scales_key = prefix + "feature_scales"
+        if enabled_key not in state_dict and scales_key not in state_dict:
+            state_dict[enabled_key] = torch.tensor(False)
+            state_dict[scales_key] = self.feature_scales.detach().clone()
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
+
+    def normalize_node_features(self, features: torch.Tensor) -> torch.Tensor:
+        """Escala apenas a entrada; não modifica filas físicas nem observações.
+
+        Canal e carga usam referências fixas com clipping em [0,1]. A fila
+        usa q/(q+q_ref), sem supor capacidade máxima ou descartar pacotes.
+        """
+        if not self.feature_normalization_enabled:
+            return features
+        nonnegative = features.clamp_min(0)
+        cqi = (nonnegative[..., 0] / self.feature_scales[0]).clamp_max(1)
+        queue = nonnegative[..., 1]
+        queue = queue / (queue + self.feature_scales[1])
+        load = (nonnegative[..., 2] / self.feature_scales[2]).clamp_max(1)
+        return torch.stack((cqi, queue, load), dim=-1)
+
     def _encode(
         self,
         node_features: torch.Tensor,
@@ -92,7 +129,7 @@ class GNNActorCritic(nn.Module):
         edge_index, edge_attr = adj_to_edge_index(adj_matrix)
         edge_index = edge_index.to(self._device)
         edge_attr = edge_attr.to(self._device)
-        return self.encoder(node_features, edge_index, edge_attr)
+        return self.encoder(self.normalize_node_features(node_features), edge_index, edge_attr)
 
     def _get_policy_and_value(
         self,

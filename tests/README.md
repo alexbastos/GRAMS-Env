@@ -6,6 +6,19 @@ repositório, em um ambiente com as dependências do projeto e `pytest` instalad
 Para os testes de agentes são necessários também PyTorch e Gymnasium; a suíte
 vetorizada requer uma versão do Gymnasium com `AutoresetMode.SAME_STEP`.
 
+## Normalização de features da GNN
+
+`test_agents/test_node_normalization.py` cobre os valores e limites de canal,
+fila e carga, monotonia das filas sem clipping de capacidade, observações
+intactas e gradientes finitos. Verifica a entrada normalizada do encoder em
+`act`, `evaluate` e `get_value`, além da persistência das escalas e da flag
+booleana em checkpoints. Checkpoints legados sem ambos os buffers devem
+desabilitar a normalização e preservar logits e valor do modelo original.
+
+```sh
+python -m pytest tests/test_agents/test_node_normalization.py -v
+```
+
 ## Comparação de qualidade de checkpoints GNN (CLI standalone)
 
 `compare_training_quality.py` não é um teste pytest e não treina modelos. Execute:
