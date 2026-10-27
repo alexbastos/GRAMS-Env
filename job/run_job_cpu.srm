@@ -7,7 +7,7 @@
 #SBATCH --job-name=grams_cpu
 #SBATCH --cpus-per-task=42
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=2-12:00:00
 #SBATCH --output=job_grams_cpu_%j.out
 #SBATCH --error=job_grams_cpu_%j.err
 
@@ -67,5 +67,6 @@ echo "GRAMS_NUM_ENVS=${GRAMS_NUM_ENVS}"
 echo "GRAMS_TORCH_THREADS=${GRAMS_TORCH_THREADS}"
 
 
-# Executa o experimento
-srun ./run_training.sh -d cpu
+# GNN: 2000 iterações; MLP: 500. Estimativa total: 44–52 horas.
+# Reserva de 60 horas com margem; confirmar limite da partição sequana_cpu.
+srun ./run_training.sh -d cpu -i 2000

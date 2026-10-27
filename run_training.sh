@@ -4,12 +4,13 @@
 # -----------------------------------------------------------------------------
 
 usage() {
-    echo "Uso: $0 [-d cpu|cuda] [-n NUM_ENVS] [-t TORCH_THREADS]"
+    echo "Uso: $0 [-d cpu|cuda] [-n NUM_ENVS] [-t TORCH_THREADS] [-i GNN_ITERATIONS]"
     echo ""
     echo "Opções:"
     echo "  -d DEVICE          Device para treinamento: 'cpu' ou 'cuda' (default: cuda)"
     echo "  -n NUM_ENVS        Ambientes paralelos no treino GNN (default: GRAMS_NUM_ENVS ou 1)"
     echo "  -t TORCH_THREADS   Threads intra-op do PyTorch no treino GNN (default: GRAMS_TORCH_THREADS ou não define)"
+    echo "  -i GNN_ITERATIONS  Total de iterações GNN (default: GRAMS_GNN_ITERATIONS ou 2000); MLP mantém 500"
     echo "  -h                 Mostra esta ajuda"
 }
 
@@ -17,7 +18,9 @@ DEVICE="cuda"
 NUM_ENVS="${GRAMS_NUM_ENVS:-1}"
 TORCH_THREADS="${GRAMS_TORCH_THREADS:-}"
 
-while getopts ":d:n:t:h" opt; do
+GNN_ITERATIONS="${GRAMS_GNN_ITERATIONS:-2000}"
+
+while getopts ":d:n:t:i:h" opt; do
     case "$opt" in
         d)
             DEVICE="$OPTARG"
@@ -27,6 +30,9 @@ while getopts ":d:n:t:h" opt; do
             ;;
         t)
             TORCH_THREADS="$OPTARG"
+            ;;
+        i)
+            GNN_ITERATIONS="$OPTARG"
             ;;
         h)
             usage
@@ -44,6 +50,11 @@ while getopts ":d:n:t:h" opt; do
             ;;
     esac
 done
+
+if ! [[ "$GNN_ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "❌ GNN_ITERATIONS inválido: '$GNN_ITERATIONS'. Use um inteiro positivo."
+    exit 1
+fi
 
 if [ "$DEVICE" != "cpu" ] && [ "$DEVICE" != "cuda" ]; then
     echo "❌ Device inválido: '$DEVICE'. Use 'cpu' ou 'cuda'."
@@ -70,6 +81,8 @@ echo " INICIANDO TREINAMENTO DOS AGENTES DE APRENDIZADO POR REFORÇO"
 echo "============================================================"
 echo "Device selecionado: $DEVICE"
 echo "Ambientes GNN   : $NUM_ENVS"
+echo "Iterações GNN   : $GNN_ITERATIONS"
+echo "Iterações MLP   : 500"
 if [ -n "$TORCH_THREADS" ]; then
     echo "Torch threads   : $TORCH_THREADS"
 fi
@@ -81,7 +94,7 @@ echo "Isso pode demorar várias horas dependendo da máquina."
 GNN_CMD=(
     python3 -m grams_env.agents.gnn.train_gnn
     --num_ues 20
-    --iterations 500
+    --iterations "$GNN_ITERATIONS"
     --rollout_steps 2048
     --seed 42
     --device "$DEVICE"
