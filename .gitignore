@@ -13,3 +13,5 @@ monolitico/
 latex/
 *.code-workspace
 results/
+job_*.err
+job_*.out
