@@ -171,7 +171,9 @@ class AsyncVectorPPOTrainer:
         # SAME_STEP impede que um passo dedicado ao reset entre no buffer.
         # spawn evita herdar pools de threads PyTorch/OpenMP do processo pai.
         self.envs = gym.vector.AsyncVectorEnv(
-            env_fns, context=context,
+            # Pipes evitam mmap de arenas compartilhadas, bloqueado em alguns
+            # nós HPC. Os ambientes continuam executando em paralelo.
+            env_fns, context=context, shared_memory=False,
             autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
         )
 
